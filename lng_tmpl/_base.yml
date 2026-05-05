@@ -299,7 +299,7 @@ gui_strings:
 - label: VMC_FILE_NEW
   string: 需要创建虚拟记忆卡文件
 - label: ERR_VMC_CONTINUE
-  string: 访问虚拟记忆卡 %s 出错，是否继续使用第 %d 插槽记忆卡？
+  string: "访问虚拟记忆卡 %s 出错，是否继续使用第 %d 插槽记忆卡？"
 - label: AUTOREFRESH
   string: 自动刷新
 - label: ABOUT
@@ -421,7 +421,7 @@ gui_strings:
 - label: NO_CHEATS_FOUND
   string: 未找到可用金手指
 - label: AUTO_START_IN_N_SECS
-  string: %i秒后自动启动...
+  string: "%i秒后自动启动..."
 - label: AUTOSTARTLAST
   string: 自动启动上次游戏
 - label: HINT_AUTOSTARTLAST
@@ -511,11 +511,11 @@ gui_strings:
 - label: PARENLOCK_DISABLE_WARNING
   string: 家长锁已关闭
 - label: BUILD_DETAILS
-  string: 编译编译选项：
+  string: 编译选项：
 - label: PARENLOCK_INVALID_PASSWORD
   string: 错误：该密码无法使用
 - label: ERR_VMC_FRAGMENTED_CONTINUE
-  string: 虚拟记忆卡 %s 文件已碎片化，是否继续使用第 %d 插槽记忆卡？
+  string: "虚拟记忆卡 %s 文件已碎片化，是否继续使用第 %d 插槽记忆卡？"
 - label: AUDIO_SETTINGS
   string: 音频设置
 - label: SFX
@@ -533,19 +533,19 @@ gui_strings:
 - label: ENABLE_NOTIFICATIONS
   string: 弹窗通知
 - label: CFG_NOTIFICATION
-  string: 已加载配置文件 %s
+  string: "已加载配置文件 %s"
 - label: THM_NOTIFICATION
-  string: 已加载主题文件 %s
+  string: "已加载主题文件 %s"
 - label: LNG_NOTIFICATION
-  string: 已加载语言文件 %s
+  string: "已加载语言文件 %s"
 - label: PARTITION_NOTIFICATION
-  string: 已挂载 %s 分区
+  string: "已挂载 %s 分区"
 - label: OPTIONS
   string: 设置选项
 - label: GAME_SETTINGS_SAVED
   string: 游戏设置已保存
 - label: GAME_SETTINGS_REMOVED
-  string: 已移除 %s 设置
+  string: "已移除 %s 设置"
 - label: NET_UPDATE_HINT
   string: 开启后将覆盖现有游戏兼容设置
 - label: SETTINGS_SOURCE
@@ -677,7 +677,7 @@ gui_strings:
 - label: FAV_HINT
   string: 收藏
 - label: FAV_MSG
-  string: 无法从收藏菜单启动 %s
+  string: "%s 无法从收藏菜单启动"
 - label: BDM_DEBUG
   string: BDM调试日志
 - label: CORE_LOADER
