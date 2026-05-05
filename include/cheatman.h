@@ -28,13 +28,12 @@
 #include <tamtypes.h>
 #include "config.h"
 
-#define CHEAT_NAME_MAX 128  // 这个本来就够大
 #define CHEAT_VERSION "0.5.3.7"
 
 #define MAX_HOOKS      5
 #define MAX_CODES      250
 #define MAX_CHEATLIST  (MAX_HOOKS * 2 + MAX_CODES * 2)
-#define CHEAT_NAME_MAX 128
+#define CHEAT_NAME_MAX 128  /* 支持中文名称 */
 
 /* Some character defines */
 #define NUL         0x00
@@ -42,7 +41,7 @@
 #define CR          0x0D
 #define SPACE       0x20
 /* Number of digits per cheat code */
-#define CODE_DIGITS 16
+#define CODE_DIGITS 166
 
 /**
  * code_t - a code object
