@@ -28,7 +28,7 @@
 #include <tamtypes.h>
 #include "config.h"
 
-
+#define CHEAT_NAME_MAX 128  // 这个本来就够大
 #define CHEAT_VERSION "0.5.3.7"
 
 #define MAX_HOOKS      5
