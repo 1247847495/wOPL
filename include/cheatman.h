@@ -28,13 +28,12 @@
 #include <tamtypes.h>
 #include "config.h"
 
-
 #define CHEAT_VERSION "0.5.3.7"
 
 #define MAX_HOOKS      5
 #define MAX_CODES      250
 #define MAX_CHEATLIST  (MAX_HOOKS * 2 + MAX_CODES * 2)
-#define CHEAT_NAME_MAX 128
+#define CHEAT_NAME_MAX 128  /* 支持中文名称 */
 
 /* Some character defines */
 #define NUL         0x00
@@ -42,7 +41,7 @@
 #define CR          0x0D
 #define SPACE       0x20
 /* Number of digits per cheat code */
-#define CODE_DIGITS 16
+#define CODE_DIGITS 166
 
 /**
  * code_t - a code object
@@ -72,3 +71,20 @@ int load_cheats(const char *cheatfile);
 void set_cheats_list(void);
 
 #endif /* _CHEATMAN_H_ */
+// 清除所有作弊（你要的删除功能）
+void ClearAllCheats(void);
+
+// 清除单个作弊
+void ClearSingleCheat(int index);
+
+// 判断作弊名称是否是中文（可用于界面显示判断）
+int IsChineseChar(const char *str);
+
+// 获取作弊名称（支持UTF8中文）
+const char *GetCheatName(int index);
+
+// 检查某个作弊是否启用
+int IsCheatEnabled(int index);
+
+// 启用/禁用单个作弊
+void EnableSingleCheat(int index, int enable);

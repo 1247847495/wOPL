@@ -420,3 +420,40 @@ void set_cheats_list(void)
         gCheatList[cheatCount - 1] = 0; // val
     }
 }
+void ClearAllCheats(void)
+{
+    memset(gCheats, 0, sizeof(gCheats));
+    memset(gCheatList, 0, sizeof(gCheatList));
+    LOG("ClearAllCheats: All cheats deleted.\n");
+}
+void ClearSingleCheat(int index)
+{
+    if (index < 0 || index >= MAX_CODES)
+        return;
+
+    memset(&gCheats[index], 0, sizeof(cheat_entry_t));
+    LOG("ClearSingleCheat: Cheat %i deleted.\n", index);
+    set_cheats_list(); // 更新列表
+}
+const char *GetCheatName(int index)
+{
+    if (index < 0 || index >= MAX_CODES)
+        return "";
+
+    return gCheats[index].name;
+}
+int IsCheatEnabled(int index)
+{
+    if (index < 0 || index >= MAX_CODES)
+        return 0;
+
+    return gCheats[index].enabled;
+}
+void EnableSingleCheat(int index, int enable)
+{
+    if (index < 0 || index >= MAX_CODES)
+        return;
+
+    gCheats[index].enabled = enable;
+    set_cheats_list();
+}
