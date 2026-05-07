@@ -1,4 +1,5 @@
-#include "include/common.h"
+#include "sys/fcntl.h"
+#include "include/opl.h"
 #include "include/lang.h"
 #include "include/gui.h"
 #include "include/supportbase.h"
@@ -9,156 +10,24 @@
 #include "include/ioman.h"
 #include "include/system.h"
 #include "include/extern_irx.h"
-#ifdef CHEAT
 #include "include/cheatman.h"
-#endif
-#include "include/art_tar.h"
 #include "modules/iopcore/common/cdvd_config.h"
-#include "include/mcemu.h"
-#include <malloc.h>
-#include <dirent.h>
-#include <libcdvd.h>
-#include <kernel.h>
-#include "opl-hdd-ioctl.h"
-#include "include/initializer.h"
-#include <stdlib.h>
 
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h> // fileXioFormat, fileXioMount, fileXioUmount, fileXioDevctl
 #include <io_common.h>   // FIO_MT_RDWR
 
 #include <hdd-ioctl.h>
-#include <speedregs.h>
-
-#include "../modules/isofs/zso.h"
-
 
 #define OPL_HDD_MODE_PS2LOGO_OFFSET 0x17F8
 
-#define HDD_MODE_UPDATE_DELAY MENU_UPD_DELAY_NOUPDATE
-
-#define PFS_INODE_MAX_BLOCKS 114
-
-typedef struct
-{
-    u32 start;  // Sector address
-    u32 length; // Sector count
-} apa_sub_t;
-
-typedef struct
-{
-    u8 unused;
-    u8 sec;
-    u8 min;
-    u8 hour;
-    u8 day;
-    u8 month;
-    u16 year;
-} ps2time_t;
-typedef struct
-{
-    u32 checksum;
-    u32 magic; // APA_MAGIC
-    u32 next;
-    u32 prev;
-    char id[APA_IDMAX];
-    char rpwd[APA_PASSMAX];
-    char fpwd[APA_PASSMAX];
-    u32 start;
-    u32 length;
-    u16 type;
-    u16 flags;
-    u32 nsub;
-    ps2time_t created;
-    u32 main;
-    u32 number;
-    u32 modver;
-    u32 pading1[7];
-    char pading2[128];
-    struct
-    {
-        char magic[32];
-        u32 version;
-        u32 nsector;
-        ps2time_t created;
-        u32 osdStart;
-        u32 osdSize;
-        char pading3[200];
-    } mbr;
-    apa_sub_t subs[APA_MAXSUB];
-} apa_header_t;
-
-typedef struct
-{
-    u32 number;
-    u16 subpart;
-    u16 count;
-} pfs_blockinfo_t;
-
-typedef struct
-{
-    u32 checksum;
-    u32 magic;
-    pfs_blockinfo_t inode_block;
-    pfs_blockinfo_t next_segment;
-    pfs_blockinfo_t last_segment;
-    pfs_blockinfo_t unused;
-    pfs_blockinfo_t data[PFS_INODE_MAX_BLOCKS];
-    u16 mode;
-    u16 attr;
-    u16 uid;
-    u16 gid;
-    ps2time_t atime;
-    ps2time_t ctime;
-    ps2time_t mtime;
-    u64 size;
-    u32 number_blocks;
-    u32 number_data;
-    u32 number_segdesg;
-    u32 subpart;
-    u32 reserved[4];
-} pfs_inode_t;
-
-typedef struct // size = 1024
-{
-    u32 checksum; // HDL uses 0xdeadfeed magic here
-    u32 magic;
-    char gamename[160];
-    u8 hdl_compat_flags;
-    u8 ops2l_compat_flags;
-    u8 dma_type;
-    u8 dma_mode;
-    char startup[60];
-    u32 layer1_start;
-    u32 discType;
-    int num_partitions;
-    struct
-    {
-        u32 part_offset; // in MB
-        u32 data_start;  // in sectors
-        u32 part_size;   // in KB
-    } part_specs[65];
-} hdl_apa_header;
-
-
-typedef struct
-{
-    int active;                 /* Activation flag */
-    apa_sub_t parts[5];         /* Vmc file Apa partitions */
-    pfs_blockinfo_t blocks[10]; /* Vmc file Pfs inode */
-    int flags;                  /* Card flag */
-    vmc_spec_t specs;           /* Card specifications */
-} hdd_vmc_infos_t;
-
-#define HDL_GAME_DATA_OFFSET 0x100000 // Sector 0x800 in the extended attribute area.
-#define HDL_FS_MAGIC         0x1337
+#include "../modules/isofs/zso.h"
 
 extern int probed_fd;
 extern u32 probed_lba;
-u8 IOBuffer[2048] ALIGNED(64); // one sector
+extern u8 IOBuffer[2048];
 
 static unsigned char hddForceUpdate = 0;
-static unsigned char hddModulesLoaded = 0;
 static unsigned char hddHDProKitDetected = 0;
 static unsigned char hddModulesLoadCount = 0;
 static unsigned char hddSupportModulesLoaded = 0;
@@ -169,336 +38,25 @@ static hdl_games_list_t hddGames;
 // forward declaration
 static item_list_t hddGameList;
 
-int gHDDSpindown;
-int gHDDStartMode;
-int hddCacheSize;
-hdl_game_info_t *gAutoLaunchGame;
-int gHDDGameListCache;
-char gOPLPart[128];
-char *gHDDPrefix;
-typedef enum {
-    HDD_LOADMODULES_STATUS_ERROR = -2,
-    HDD_LOADMODULES_STATUS_UNK = -1,
-    HDD_LOADMODULES_STATUS_NOERROR,
-    HDD_LOADMODULES_STATUS_ALREADYLOADED,
-    HDD_LOADMODULES_STATUS_BUSYLOADING,
-    HDD_LOADMODULES_STATUS_COUNT,
-} hdd_loadmodules_status;
+// 判断APA设备是否使用ART2文件夹
+static int artUseBuckets_APA = 0;
 
 static int hddLoadGameListCache(hdl_games_list_t *cache);
 static int hddUpdateGameListCache(hdl_games_list_t *cache, hdl_games_list_t *game_list);
 
-int hddCheck(void)
-{
-    int ret;
-
-    ret = fileXioDevctl("hdd0:", HDIOC_STATUS, NULL, 0, NULL, 0);
-    LOG("HDD: Status is %d\n", ret);
-    // 0 = HDD connected and formatted, 1 = not formatted, 2 = HDD not usable, 3 = HDD not connected.
-    if ((ret >= 3) || (ret < 0))
-        return -1;
-
-    return ret;
-}
-
-int hddSetTransferMode(int type, int mode)
-{
-    hddAtaSetMode_t *args = (hddAtaSetMode_t *)IOBuffer;
-
-    args->type = type;
-    args->mode = mode;
-
-    return fileXioDevctl("xhdd0:", ATA_DEVCTL_SET_TRANSFER_MODE, args, sizeof(hddAtaSetMode_t), NULL, 0);
-}
-
-static int hddIs48bit(void)
-{
-    return fileXioDevctl("xhdd0:", ATA_DEVCTL_IS_48BIT, NULL, 0, NULL, 0);
-}
-
-void hddSetIdleTimeout(int timeout)
-{
-    // From hdparm man:
-    // A value of zero means "timeouts  are  disabled":  the
-    // device will not automatically enter standby mode.  Values from 1
-    // to 240 specify multiples of 5 seconds, yielding timeouts from  5
-    // seconds to 20 minutes.  Values from 241 to 251 specify from 1 to
-    // 11 units of 30 minutes, yielding timeouts from 30 minutes to 5.5
-    // hours.   A  value  of  252  signifies a timeout of 21 minutes. A
-    // value of 253 sets a vendor-defined timeout period between 8  and
-    // 12  hours, and the value 254 is reserved.  255 is interpreted as
-    // 21 minutes plus 15 seconds.  Note that  some  older  drives  may
-    // have very different interpretations of these values.
-
-    u8 standbytimer = (u8)timeout;
-
-    fileXioDevctl("hdd0:", HDIOC_IDLE, &standbytimer, 1, NULL, 0);
-    fileXioDevctl("hdd1:", HDIOC_IDLE, &standbytimer, 1, NULL, 0);
-}
-
-static void hddSetIdleImmediate(void)
-{
-    fileXioDevctl("hdd0:", HDIOC_IDLEIMM, NULL, 0, NULL, 0);
-    fileXioDevctl("hdd1:", HDIOC_IDLEIMM, NULL, 0, NULL, 0);
-}
-
-int hddReadSectors(u32 lba, u32 nsectors, void *buf)
-{
-    hddAtaTransfer_t *args = (hddAtaTransfer_t *)IOBuffer;
-
-    args->lba = lba;
-    args->size = nsectors;
-
-    if (fileXioDevctl("hdd0:", HDIOC_READSECTOR, args, sizeof(hddAtaTransfer_t), buf, nsectors * 512) != 0)
-        return -1;
-
-    return 0;
-}
-
-static int hddWriteSectors(u32 lba, u32 nsectors, const void *buf)
-{
-    static u8 WriteBuffer[2 * 512 + sizeof(hddAtaTransfer_t)] ALIGNED(64); // Has to be a different buffer from IOBuffer (input can be in IOBuffer).
-    int argsz;
-    hddAtaTransfer_t *args = (hddAtaTransfer_t *)WriteBuffer;
-
-    if (nsectors > 2) // Sanity check
-        return -ENOMEM;
-
-    args->lba = lba;
-    args->size = nsectors;
-    memcpy(args->data, buf, nsectors * 512);
-
-    argsz = sizeof(hddAtaTransfer_t) + (nsectors * 512);
-
-    if (fileXioDevctl("hdd0:", HDIOC_WRITESECTOR, args, argsz, NULL, 0) != 0)
-        return -1;
-
-    return 0;
-}
-
-struct GameDataEntry
-{
-    u32 lba, size;
-    struct GameDataEntry *next;
-    char id[APA_IDMAX + 1];
-} GameDataEntry;
-
-static void hddFreeHDLGamelist(hdl_games_list_t *game_list)
-{
-    if (game_list->games != NULL) {
-        free(game_list->games);
-        game_list->games = NULL;
-        game_list->count = 0;
-    }
-}
-
-static int hddGetHDLGameInfo(struct GameDataEntry *game, hdl_game_info_t *ginfo)
-{
-    int ret;
-
-    ret = hddReadSectors(game->lba, 2, IOBuffer);
-    if (ret == 0) {
-
-        hdl_apa_header *hdl_header = (hdl_apa_header *)IOBuffer;
-
-        strncpy(ginfo->partition_name, game->id, APA_IDMAX);
-        ginfo->partition_name[APA_IDMAX] = '\0';
-        strncpy(ginfo->name, hdl_header->gamename, HDL_GAME_NAME_MAX);
-        ginfo->name[HDL_GAME_NAME_MAX] = '\0';
-        strncpy(ginfo->startup, hdl_header->startup, sizeof(ginfo->startup) - 1);
-        ginfo->startup[sizeof(ginfo->startup) - 1] = '\0';
-        ginfo->hdl_compat_flags = hdl_header->hdl_compat_flags;
-        ginfo->ops2l_compat_flags = hdl_header->ops2l_compat_flags;
-        ginfo->dma_type = hdl_header->dma_type;
-        ginfo->dma_mode = hdl_header->dma_mode;
-        ginfo->layer_break = hdl_header->layer1_start;
-        ginfo->disctype = (u8)hdl_header->discType;
-        ginfo->start_sector = game->lba;
-        ginfo->total_size_in_kb = game->size * 2; // size * 2048 / 1024 = 2x
-    } else
-        ret = -1;
-
-    return ret;
-}
-
-//-------------------------------------------------------------------------
-static struct GameDataEntry *GetGameListRecord(struct GameDataEntry *head, const char *partition)
-{
-    struct GameDataEntry *current;
-
-    for (current = head; current != NULL; current = current->next) {
-        if (!strncmp(current->id, partition, APA_IDMAX)) {
-            return current;
-        }
-    }
-
-    return NULL;
-}
-
-static int hddGetHDLGamelist(hdl_games_list_t *game_list)
-{
-    struct GameDataEntry *head, *current, *next, *pGameEntry;
-    unsigned int count, i;
-    iox_dirent_t dirent;
-    int fd, ret;
-
-    hddFreeHDLGamelist(game_list);
-
-    ret = 0;
-    if ((fd = fileXioDopen("hdd0:")) >= 0) {
-        head = current = NULL;
-        count = 0;
-        while (fileXioDread(fd, &dirent) > 0) {
-            if (dirent.stat.mode == HDL_FS_MAGIC) {
-                if ((pGameEntry = GetGameListRecord(head, dirent.name)) == NULL) {
-                    if (head == NULL) {
-                        current = head = malloc(sizeof(struct GameDataEntry));
-                    } else {
-                        current = current->next = malloc(sizeof(struct GameDataEntry));
-                    }
-
-                    if (current == NULL)
-                        break;
-
-                    strncpy(current->id, dirent.name, APA_IDMAX);
-                    current->id[APA_IDMAX] = '\0';
-                    count++;
-                    current->next = NULL;
-                    current->size = 0;
-                    current->lba = 0;
-                    pGameEntry = current;
-                }
-
-                if (!(dirent.stat.attr & APA_FLAG_SUB)) {
-                    // Note: The APA specification states that there is a 4KB area used for storing the partition's information, before the extended attribute area.
-                    pGameEntry->lba = dirent.stat.private_5 + (HDL_GAME_DATA_OFFSET + 4096) / 512;
-                }
-
-                pGameEntry->size += (dirent.stat.size / 4); // size in HDD sectors * (512 / 2048) = 0.25x
-            }
-        }
-
-        fileXioDclose(fd);
-
-        if (head != NULL) {
-            if ((game_list->games = malloc(sizeof(hdl_game_info_t) * count)) != NULL) {
-                memset(game_list->games, 0, sizeof(hdl_game_info_t) * count);
-
-                for (i = 0, current = head; i < count; i++, current = current->next) {
-                    if ((ret = hddGetHDLGameInfo(current, &game_list->games[i])) != 0)
-                        break;
-                }
-
-                if (ret) {
-                    free(game_list->games);
-                    game_list->games = NULL;
-                } else {
-                    game_list->count = count;
-                }
-            } else {
-                ret = ENOMEM;
-            }
-
-            for (current = head; current != NULL; current = next) {
-                next = current->next;
-                free(current);
-            }
-        }
-    } else {
-        ret = fd;
-    }
-
-    return ret;
-}
-
-
-static int hddSetHDLGameInfo(hdl_game_info_t *ginfo)
-{
-    if (hddReadSectors(ginfo->start_sector, 2, IOBuffer) != 0)
-        return -EIO;
-
-    hdl_apa_header *hdl_header = (hdl_apa_header *)IOBuffer;
-
-    // just change game name and compat flags !!!
-    strncpy(hdl_header->gamename, ginfo->name, sizeof(hdl_header->gamename));
-    hdl_header->gamename[sizeof(hdl_header->gamename) - 1] = '\0';
-    // hdl_header->hdl_compat_flags = ginfo->hdl_compat_flags;
-    hdl_header->ops2l_compat_flags = ginfo->ops2l_compat_flags;
-    hdl_header->dma_type = ginfo->dma_type;
-    hdl_header->dma_mode = ginfo->dma_mode;
-
-    if (hddWriteSectors(ginfo->start_sector, 2, IOBuffer) != 0)
-        return -EIO;
-
-    return 0;
-}
-
-static int hddDeleteHDLGame(hdl_game_info_t *ginfo)
-{
-    char path[38];
-
-    LOG("HDD Delete game: '%s'\n", ginfo->name);
-
-    sprintf(path, "hdd0:%s", ginfo->partition_name);
-
-    return unlink(path);
-}
-
-static int hddGetPartitionInfo(const char *name, apa_sub_t *parts)
-{
-    u32 lba;
-    iox_stat_t stat;
-    apa_header_t *header;
-    int result, i;
-
-    if ((result = fileXioGetStat(name, &stat)) >= 0) {
-        lba = stat.private_5;
-        header = (apa_header_t *)IOBuffer;
-
-        if (hddReadSectors(lba, sizeof(apa_header_t) / 512, header) == 0) {
-            parts[0].start = header->start;
-            parts[0].length = header->length;
-
-            for (i = 0; i < header->nsub; i++)
-                parts[1 + i] = header->subs[i];
-
-            result = header->nsub + 1;
-        } else
-            result = -EIO;
-    }
-
-    return result;
-}
-
-static int hddGetFileBlockInfo(const char *name, const apa_sub_t *subs, pfs_blockinfo_t *blocks, int max)
-{
-    u32 lba;
-    iox_stat_t stat;
-    pfs_inode_t *inode;
-    int result;
-
-    if ((result = fileXioGetStat(name, &stat)) >= 0) {
-        lba = subs[stat.private_4].start + stat.private_5;
-        inode = (pfs_inode_t *)IOBuffer;
-
-        if (hddReadSectors(lba, sizeof(pfs_inode_t) / 512, inode) == 0) {
-            if (inode->number_data < max) {
-                memcpy(blocks, inode->data, max * sizeof(pfs_blockinfo_t));
-                result = inode->number_data;
-            } else
-                result = -ENOMEM;
-        } else
-            result = -EIO;
-    }
-
-    return result;
-}
-
-
 static void hddInitModules(void)
 {
     hddLoadModules();
-    hddLoadSupportModules();
+    // 如果驱动加载成功，就不断重试hddLoadSupportModules，直到超时2秒
+    if (hddLoadModulesSuccess) {
+        int retryCount = 0;
+        while (hddLoadSupportModules()) {
+            if (++retryCount >= 20)
+                break;
+            usleep(100000);
+        }
+    } else
+        hddLoadSupportModules();
 
     // update Themes
     char path[256];
@@ -507,11 +65,6 @@ static void hddInitModules(void)
 
     sprintf(path, "%sLNG", gHDDPrefix);
     lngAddLanguages(path, "/", hddGameList.mode);
-
-    if (gEnableArchivedArt) {
-        sprintf(path, "%sART/art.tar", gHDDPrefix);
-        loadTarFile(path);
-    }
 
     sbCreateFolders(gHDDPrefix, 0);
 }
@@ -554,32 +107,6 @@ static int hddCheckHDProKit(void)
     return ret;
 }
 
-/**
- * Some compatible adaptors may malfunction if transfers are not done according
- * to the old ps2atad design. Official adaptors appear to have a 0x0001 set for
- * this register, but not compatibles. While official I/O to this register are
- * 8-bit, some compatibles have a 0x01 for the lower 8-bits, but the upper
- * 8-bits contain some random value. Hence perform a 16-bit read instead.
- */
-static int hddCheckGameStar(void)
-{
-    int ret = 0;
-    USE_SPD_REGS;
-
-    DIntr();
-    ee_kmode_enter();
-
-    ret = (SPD_REG16(0x20) != 1);
-
-    ee_kmode_exit();
-    EIntr();
-
-    if (ret)
-        LOG("HDDSUPPORT GameStar detected!\n");
-
-    return ret;
-}
-
 // Taken from libhdd:
 #define PFS_ZONE_SIZE 8192
 #define PFS_FRAGMENT  0x00000000
@@ -589,7 +116,7 @@ static void hddCheckOPLFolder(const char *mountPoint)
     DIR *dir;
     char path[32];
 
-    sprintf(path, "%swOPL", mountPoint);
+    sprintf(path, "%sOPL", mountPoint);
 
     dir = opendir(path);
     if (dir == NULL)
@@ -608,9 +135,9 @@ static void hddFindOPLPartition(void)
 
     ret = fileXioMount("pfs0:", "hdd0:__common", FIO_MT_RDWR);
     if (ret == 0) {
-        fd = open("pfs0:wOPL/conf_hdd.cfg", O_RDONLY);
+        fd = open("pfs0:OPL/conf_hdd.cfg", O_RDONLY);
         if (fd >= 0) {
-            config = configAlloc(0, NULL, "pfs0:wOPL/conf_hdd.cfg");
+            config = configAlloc(0, NULL, "pfs0:OPL/conf_hdd.cfg");
             configRead(config);
 
             configGetStrCopy(config, "hdd_partition", name, sizeof(name));
@@ -624,12 +151,12 @@ static void hddFindOPLPartition(void)
 
         hddCheckOPLFolder(hddPrefix);
 
-        fd = open("pfs0:wOPL/conf_hdd.cfg", O_CREAT | O_TRUNC | O_WRONLY);
+        fd = open("pfs0:OPL/conf_hdd.cfg", O_CREAT | O_TRUNC | O_WRONLY);
         if (fd >= 0) {
-            config = configAlloc(0, NULL, "pfs0:wOPL/conf_hdd.cfg");
+            config = configAlloc(0, NULL, "pfs0:OPL/conf_hdd.cfg");
             configRead(config);
 
-            configSetStr(config, "hdd_partition", "+wOPL");
+            configSetStr(config, "hdd_partition", "+OPL");
             configWrite(config);
 
             configFree(config);
@@ -637,7 +164,7 @@ static void hddFindOPLPartition(void)
         }
     }
 
-    snprintf(gOPLPart, sizeof(gOPLPart), "hdd0:+wOPL");
+    snprintf(gOPLPart, sizeof(gOPLPart), "hdd0:+OPL");
 
     return;
 }
@@ -659,15 +186,12 @@ static int hddCreateOPLPartition(const char *name)
     return result;
 }
 
-int hddLoadModules(void)
+int hddLoadModulesSuccess = 0;
+void hddLoadModules(void)
 {
-    int retLoadModule;
-    int retStatus = HDD_LOADMODULES_STATUS_UNK;
+    int ret;
 
     LOG("HDDSUPPORT LoadModules %d\n", hddModulesLoadCount);
-
-    if (hddModulesLoaded)
-        retStatus = HDD_LOADMODULES_STATUS_ALREADYLOADED;
 
     if (hddModulesLoadCount == 0) {
         // Increment the load count as soon as possible to prevent thread scheduling from allowing another thread to
@@ -682,32 +206,27 @@ int hddLoadModules(void)
         hddHDProKitDetected = hddCheckHDProKit();
         if (hddHDProKitDetected) {
             LOG("[ATAD_HDPRO]:\n");
-            retLoadModule = sysLoadModuleBuffer(&hdpro_atad_irx, size_hdpro_atad_irx, 0, NULL);
+            ret = sysLoadModuleBuffer(&hdpro_atad_irx, size_hdpro_atad_irx, 0, NULL);
             LOG("[XHDD]:\n");
             sysLoadModuleBuffer(&xhdd_irx, size_xhdd_irx, 6, "-hdpro");
         } else {
             LOG("[ATAD]:\n");
-            retLoadModule = sysLoadModuleBuffer(&ps2atad_irx, size_ps2atad_irx, 0, NULL);
+            ret = sysLoadModuleBuffer(&ps2atad_irx, size_ps2atad_irx, 0, NULL);
             LOG("[XHDD]:\n");
             sysLoadModuleBuffer(&xhdd_irx, size_xhdd_irx, 0, NULL);
         }
 
-        if (retLoadModule < 0) {
+        if (ret < 0) {
             LOG("HDD: No HardDisk Drive detected.\n");
-            guiSetErrorMessageWithCode(_STR_HDD_NOT_CONNECTED_ERROR, ERROR_HDD_IF_NOT_DETECTED);
-            retStatus = HDD_LOADMODULES_STATUS_ERROR;
-        } else {
-            retStatus = HDD_LOADMODULES_STATUS_NOERROR;
-            hddModulesLoaded = 1;
+            setErrorMessageWithCode(_STR_HDD_NOT_CONNECTED_ERROR, ERROR_HDD_IF_NOT_DETECTED);
+            return;
         }
-    } else {
+        hddLoadModulesSuccess = 1;
+        //usleep(500000); // 延迟0.5秒,加一点延迟,尤其在PS2上的HDD可能需要
+    } else
         hddModulesLoadCount++;
-        if (!hddModulesLoaded)
-            retStatus = HDD_LOADMODULES_STATUS_BUSYLOADING;
-    }
 
     LOG("HDDSUPPORT LoadModules done\n");
-    return retStatus;
 }
 
 // Returns 1 for MBR/GPT, 0 for APA, and -1 if an error occured
@@ -756,7 +275,7 @@ int hddDetectNonSonyFileSystem()
     return result;
 }
 
-void hddLoadSupportModules(void)
+int hddLoadSupportModules(void)
 {
     static char hddarg[] = "-o"
                            "\0"
@@ -781,7 +300,7 @@ void hddLoadSupportModules(void)
     if (hddDetectNonSonyFileSystem() != 0) {
         // Drive is MBR/GPT style, or unknown, bail out or risk corrupting the drive.
         LOG("HDDSUPPORT LoadSupportModules bailing out early...\n");
-        return;
+        return -1;
     }
 
     if (!hddSupportModulesLoaded) {
@@ -789,23 +308,23 @@ void hddLoadSupportModules(void)
         int ret = sysLoadModuleBuffer(&ps2hdd_irx, size_ps2hdd_irx, sizeof(hddarg), hddarg);
         if (ret < 0) {
             LOG("HDD: No HardDisk Drive detected.\n");
-            guiSetErrorMessageWithCode(_STR_HDD_NOT_CONNECTED_ERROR, ERROR_HDD_MODULE_HDD_FAILURE);
-            return;
+            setErrorMessageWithCode(_STR_HDD_NOT_CONNECTED_ERROR, ERROR_HDD_MODULE_HDD_FAILURE);
+            return -1;
         }
 
         // Check if a HDD unit is connected
         if (hddCheck() < 0) {
             LOG("HDD: No HardDisk Drive detected.\n");
-            guiSetErrorMessageWithCode(_STR_HDD_NOT_CONNECTED_ERROR, ERROR_HDD_NOT_DETECTED);
-            return;
+            setErrorMessageWithCode(_STR_HDD_NOT_CONNECTED_ERROR, ERROR_HDD_NOT_DETECTED);
+            return -1;
         }
 
         LOG("[PS2FS]:\n");
         ret = sysLoadModuleBuffer(&ps2fs_irx, size_ps2fs_irx, sizeof(pfsarg), pfsarg);
         if (ret < 0) {
             LOG("HDD: HardDisk Drive not formatted (PFS).\n");
-            guiSetErrorMessageWithCode(_STR_HDD_NOT_FORMATTED_ERROR, ERROR_HDD_MODULE_PFS_FAILURE);
-            return;
+            setErrorMessageWithCode(_STR_HDD_NOT_FORMATTED_ERROR, ERROR_HDD_MODULE_PFS_FAILURE);
+            return -1;
         }
 
         hddSupportModulesLoaded = 1;
@@ -825,19 +344,41 @@ void hddLoadSupportModules(void)
 
         if (gOPLPart[5] != '+') {
             hddCheckOPLFolder(hddPrefix);
-            gHDDPrefix = "pfs0:wOPL/";
+            gHDDPrefix = "pfs0:OPL/";
         }
+
+        // 判断是否存在ART2，提升图片读取效率
+        char art2Path[128];
+        snprintf(art2Path, sizeof(art2Path), "%sART2", gHDDPrefix);
+        artUseBuckets_APA = !access(art2Path, F_OK);
+
+        // 根据全局DMA设置，来重设DMA传输模式，加快Art图片的读取速度
+        int gDmaMode = -1; // 获取配置失败时，不重设传输模式
+        configGetInt(configGetByType(CONFIG_GAME), CONFIG_ITEM_DMA, &gDmaMode);
+        if (gDmaMode >= 3 && gDmaMode <= 10)
+            hddSetTransferMode(0x40, gDmaMode - 3);
+        else if (gDmaMode >= 0 && gDmaMode <= 2)
+            hddSetTransferMode(0x20, gDmaMode);
+
+        //// debug
+        // char debugFileDir[64];
+        // strcpy(debugFileDir, "mass0:debug-UDMA.txt");
+        // FILE *debugFile = fopen(debugFileDir, "ab+");
+        // if (debugFile != NULL) {
+        //     fprintf(debugFile, "APAHDD启动时：传输模式校准为UDMA %d\r\n", gDmaMode - 3);
+        //     fclose(debugFile);
+        // }
+        return 0;
     }
 }
 
-static void hddInit(item_list_t *itemList)
+void hddInit(item_list_t *itemList)
 {
     LOG("HDDSUPPORT Init\n");
     hddForceUpdate = 0; // Use cache at initial startup.
     configGetInt(configGetByType(CONFIG_OPL), "hdd_frames_delay", &hddGameList.delay);
-    ioPutRequest(IO_CUSTOM_SIMPLEACTION, &hddInitModules);
+    hddInitModules();
     hddGameList.enabled = 1;
-    itemList->enabled = 1;
 }
 
 item_list_t *hddGetObject(int initOnly)
@@ -870,7 +411,6 @@ static int hddUpdateGameList(item_list_t *itemList)
     }
 
     hddForceUpdate = 1; // Subsequent refresh operations will cause the HDD to be scanned.
-
     return (ret == 0 ? hddGames.count : 0);
 }
 
@@ -917,9 +457,7 @@ void hddLaunchGame(item_list_t *itemList, int id, config_set_t *configSet)
 {
     int i, size_irx = 0;
     int EnablePS2Logo = 0;
-#ifdef CHEAT
     int result;
-#endif
     void *irx = NULL;
     char filename[32];
     hdl_game_info_t *game;
@@ -995,8 +533,9 @@ void hddLaunchGame(item_list_t *itemList, int id, config_set_t *configSet)
                             snprintf(error, sizeof(error), _l(_STR_ERR_VMC_FRAGMENTED_CONTINUE), vmc_name[vmc_id], (vmc_id + 1));
                         else
                             snprintf(error, sizeof(error), _l(_STR_ERR_VMC_CONTINUE), vmc_name[vmc_id], (vmc_id + 1));
-                        if (!guiMsgBox(error, 1, NULL))
+                        if (!guiMsgBox(error, 1, NULL)) {
                             return;
+                        }
                     } else
                         LOG("VMC error\n");
                 }
@@ -1015,21 +554,36 @@ void hddLaunchGame(item_list_t *itemList, int id, config_set_t *configSet)
 
     if (gRememberLastPlayed) {
         configSetStr(configGetByType(CONFIG_LAST), "last_played", game->startup);
-        configSave(CONFIG_LAST, 0);
+        saveConfig(CONFIG_LAST, 0);
     }
 
     char gid[5];
     configGetDiscIDBinary(configSet, gid);
 
-    int dmaType = 0, dmaMode = 7, compatMode = 0;
+    // 默认为UDMA 4，与官方一致
+    int dmaType = 0x40, dmaMode = 7, compatMode = 0;
     configGetInt(configSet, CONFIG_ITEM_COMPAT, &compatMode);
-    configGetInt(configSet, CONFIG_ITEM_DMA, &dmaMode);
+    configGetInt(configSet, CONFIG_ITEM_DMASOURCE, &gDmaSource);
+    if (gDmaSource == 0)
+        configGetInt(configGetByType(CONFIG_GAME), CONFIG_ITEM_DMA, &dmaMode);
+    else
+        configGetInt(configSet, CONFIG_ITEM_DMA, &dmaMode);
+
+    // Set DMA mode and spindown time.
     if (dmaMode < 3)
         dmaType = 0x20;
-    else {
-        dmaType = 0x40;
+    else
         dmaMode -= 3;
-    }
+
+    //// debug
+    //char debugFileDir[64];
+    //strcpy(debugFileDir, "mass0:debug-UDMA.txt");
+    //FILE *debugFile = fopen(debugFileDir, "ab+");
+    //if (debugFile != NULL) {
+    //    fprintf(debugFile, "游戏以UDMA %d模式启动了！\r\n\r\n", dmaMode);
+    //    fclose(debugFile);
+    //}
+
     hddSetTransferMode(dmaType, dmaMode);
     // gHDDSpindown [0..20] -> spindown [0..240] -> seconds [0..1200]
     hddSetIdleTimeout(gHDDSpindown * 12);
@@ -1037,16 +591,13 @@ void hddLaunchGame(item_list_t *itemList, int id, config_set_t *configSet)
     if (hddHDProKitDetected) {
         size_irx = size_hdd_hdpro_cdvdman_irx;
         irx = &hdd_hdpro_cdvdman_irx;
-    } else if (hddCheckGameStar()) {
-        size_irx = size_hdd_gamestar_cdvdman_irx;
-        irx = &hdd_gamestar_cdvdman_irx;
     } else {
         size_irx = size_hdd_cdvdman_irx;
         irx = &hdd_cdvdman_irx;
     }
 
     sbPrepare(NULL, configSet, size_irx, irx, &i);
-#ifdef CHEAT
+
     if ((result = sbLoadCheats(gHDDPrefix, game->startup)) < 0) {
         if (gAutoLaunchGame == NULL) {
             switch (result) {
@@ -1059,7 +610,6 @@ void hddLaunchGame(item_list_t *itemList, int id, config_set_t *configSet)
         } else
             LOG("Cheats error\n");
     }
-#endif
 
     settings = (struct cdvdman_settings_hdd *)((u8 *)irx + i);
 
@@ -1075,10 +625,6 @@ void hddLaunchGame(item_list_t *itemList, int id, config_set_t *configSet)
     if (gPS2Logo)
         EnablePS2Logo = CheckPS2Logo(0, game->start_sector + OPL_HDD_MODE_PS2LOGO_OFFSET);
 
-    int coreLoader = 0;
-    int isZSO = 0;
-    configGetInt(configSet, CONFIG_ITEM_CORE_LOADER, &coreLoader);
-
     // Check for ZSO to correctly adjust layer1 start
     settings->common.layer1_start = 0; // cdvdman will read it from APA header
     hddReadSectors(game->start_sector + OPL_HDD_MODE_PS2LOGO_OFFSET, 1, IOBuffer);
@@ -1090,20 +636,6 @@ void hddLaunchGame(item_list_t *itemList, int id, config_set_t *configSet)
         u32 maxLBA = *(u32 *)(IOBuffer + 80);
         if (maxLBA > 0 && maxLBA < ziso_total_block) {   // dual layer check
             settings->common.layer1_start = maxLBA - 16; // adjust second layer start
-        }
-        isZSO = 1;
-    }
-
-    const char *neutrinoPath = NULL;
-    if (coreLoader) {
-        neutrinoPath = sbFileExists(NEUTRINO_PATH) ? NEUTRINO_PATH : (sbFileExists(NEUTRINO_ALT_PATH) ? NEUTRINO_ALT_PATH : NULL);
-
-        if (isZSO) {
-            guiWarning("Neutrino does not support this file format, launching with <OPL> core", 6);
-            coreLoader = 0;
-        } else if (neutrinoPath == NULL) {
-            guiWarning("Neutrino ELF not found, launching with <OPL> core", 6);
-            coreLoader = 0;
         }
     }
 
@@ -1119,18 +651,11 @@ void hddLaunchGame(item_list_t *itemList, int id, config_set_t *configSet)
         fileXioDevctl("pfs:", PDIOC_CLOSEALL, NULL, 0, NULL, 0);
     }
 
-    if (coreLoader) {
-        LOG("partition_name=[%s] name=[%s] startup=[%s]\n", game->partition_name, game->name, game->startup);
-        sysLaunchNeutrino("apa", game->partition_name, compatMode, EnablePS2Logo, neutrinoPath);
-        return;
-    }
-
     settings->common.fakemodule_flags |= FAKE_MODULE_FLAG_DEV9;
     settings->common.fakemodule_flags |= FAKE_MODULE_FLAG_ATAD;
 
     // adjust ZSO cache
     settings->common.zso_cache = hddCacheSize;
-
     sysLaunchLoaderElf(filename, "HDD_MODE", size_irx, irx, size_mcemu_irx, hdd_mcemu_irx, EnablePS2Logo, compatMode);
 }
 
@@ -1154,15 +679,23 @@ static config_set_t *hddGetConfig(item_list_t *itemList, int id)
 
 static int hddGetImage(item_list_t *itemList, char *folder, int isRelative, char *value, char *suffix, GSTEXTURE *resultTex, short psm)
 {
+    if (!value)
+        return ERR_BAD_FILE;
+
     char path[256];
-    if (gEnableArchivedArt)
-        snprintf(path, sizeof(path), "%s_%s", value, suffix);
-    else if (isRelative)
-        snprintf(path, sizeof(path), "%s%s/%s_%s", gHDDPrefix, folder, value, suffix);
-    else
+    if (isRelative) {
+        if (artUseBuckets_APA) {
+            int len = strlen(value);
+            if (len >= 4 && (value[len - 1] == 'F' || value[len - 1] == 'f'))
+                snprintf(path, sizeof(path), "%sART2/APPS/%s/%s_%s", gHDDPrefix, value, value, suffix);
+            else
+                snprintf(path, sizeof(path), "%sART2/GAMES/%s/%s_%s", gHDDPrefix, value, value, suffix);
+        } else
+            snprintf(path, sizeof(path), "%s%s/%s_%s", gHDDPrefix, folder, value, suffix);
+    } else
         snprintf(path, sizeof(path), "%s%s_%s", folder, value, suffix);
 
-    return texDiscoverLoad(resultTex, path, -1, gEnableArchivedArt);
+    return texDiscoverLoad(resultTex, path, -1);
 }
 
 static int hddGetTextId(item_list_t *itemList)
@@ -1172,7 +705,7 @@ static int hddGetTextId(item_list_t *itemList)
 
 static int hddGetIconId(item_list_t *itemList)
 {
-    return CATEGORY_HDD_APA_ICON;
+    return HDD_ICON;
 }
 
 // This may be called, even if hddInit() was not.
@@ -1233,17 +766,17 @@ static void hddShutdown(item_list_t *itemList)
 
 static int hddLoadGameListCache(hdl_games_list_t *cache)
 {
+    if (!gHDDGameListCache)
+        return 1;
+
     char filename[256];
     FILE *file;
     hdl_game_info_t *games;
     int result, size, count;
 
-    if (!gHDDGameListCache)
-        return 1;
-
     hddFreeHDLGamelist(cache);
 
-    sprintf(filename, "%sgames.bin", gHDDPrefix);
+    sprintf(filename, gTxtRename ? "%stxtCache.bin" : "%sCache.bin", gHDDPrefix);
     file = fopen(filename, "rb");
     if (file != NULL) {
         fseek(file, 0, SEEK_END);
@@ -1282,22 +815,31 @@ static int hddLoadGameListCache(hdl_games_list_t *cache)
 
 static int hddUpdateGameListCache(hdl_games_list_t *cache, hdl_games_list_t *game_list)
 {
+    if (!gHDDGameListCache)
+        return 1;
+
     char filename[256];
     FILE *file;
     int result, i, j, modified;
 
-    if (!gHDDGameListCache)
-        return 1;
-
     if (cache->count > 0) {
         modified = 0;
-        for (i = 0; i < cache->count; i++) {
-            for (j = 0; j < game_list->count; j++) {
-                if (strncmp(cache->games[i].partition_name, game_list->games[j].partition_name, APA_IDMAX + 1) == 0)
+        for (i = 0; i < game_list->count; i++) {
+            for (j = 0; j < cache->count; j++) {
+                if (strncmp(game_list->games[i].partition_name, cache->games[j].partition_name, APA_IDMAX + 1) == 0) {
+                    // 检查txt映射名是否有修改
+                    if (gTxtRename) {
+                        if (strncmp(game_list->games[i].transName, cache->games[j].transName, 160) != 0)
+                            modified = 1;
+                    }
                     break;
+                }
             }
 
-            if (j == game_list->count) {
+            if (modified)
+                break;
+
+            if (j == cache->count) {
                 LOG("hddUpdateGameListCache: game added.\n");
                 modified = 1;
                 break;
@@ -1316,7 +858,7 @@ static int hddUpdateGameListCache(hdl_games_list_t *cache, hdl_games_list_t *gam
         return 0;
     LOG("hddUpdateGameListCache: caching new game list.\n");
 
-    sprintf(filename, "%sgames.bin", gHDDPrefix);
+    sprintf(filename, gTxtRename ? "%stxtCache.bin" : "%sCache.bin", gHDDPrefix);
     if (game_list->count > 0) {
         file = fopen(filename, "wb");
         if (file != NULL) {
@@ -1343,31 +885,3 @@ static item_list_t hddGameList = {
     HDD_MODE, 0, 0, MODE_FLAG_COMPAT_DMA, MENU_MIN_INACTIVE_FRAMES, HDD_MODE_UPDATE_DELAY, NULL, NULL, &hddGetTextId, &hddGetPrefix, &hddInit, &hddNeedsUpdate, &hddUpdateGameList,
     &hddGetGameCount, &hddGetGame, &hddGetGameName, &hddGetGameNameLength, &hddGetGameStartup, &hddDeleteGame, &hddRenameGame,
     &hddLaunchGame, &hddGetConfig, &hddGetImage, &hddCleanUp, &hddShutdown, &hddCheckVMC, &hddGetIconId};
-
-int hddIsPresent()
-{
-    // the only thing that currently uses ata_device_identify is ATA_DEVCTL_GET_HIGHEST_UDMA_MODE, so this is the best method to check for presence via xhdd (for now anyways)
-    // ideally, we'd only have ata_device_identify
-    return fileXioDevctl("xhdd0:", ATA_DEVCTL_GET_HIGHEST_UDMA_MODE, NULL, 0, NULL, 0) >= 0;
-}
-
-void autoLaunchHDDGame(char *argv[])
-{
-    char path[256];
-    config_set_t *configSet;
-
-    miniInit(HDD_MODE);
-
-    gAutoLaunchGame = malloc(sizeof(hdl_game_info_t));
-    memset(gAutoLaunchGame, 0, sizeof(hdl_game_info_t));
-
-    snprintf(gAutoLaunchGame->startup, sizeof(gAutoLaunchGame->startup), argv[1]);
-    gAutoLaunchGame->start_sector = strtoul(argv[2], NULL, 0);
-    snprintf(gOPLPart, sizeof(gOPLPart), "hdd0:%s", argv[3]);
-
-    snprintf(path, sizeof(path), "%sCFG/%s.cfg", gHDDPrefix, gAutoLaunchGame->startup);
-    configSet = configAlloc(0, NULL, path);
-    configRead(configSet);
-
-    hddLaunchGame(NULL, -1, configSet);
-}
